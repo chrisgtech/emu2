@@ -27,9 +27,9 @@ def tempdir():
 
 @contextmanager
 def tempzip(zipfile):
-    with tempdir() as dir:
-        patoolib.extract_archive(zipfile, outdir=dir, verbosity=-1)
-        yield dir
+    with tempdir() as zipdir:
+        patoolib.extract_archive(zipfile, outdir=zipdir, verbosity=-1)
+        yield zipdir
 
 def prettysize(inbytes):
     if inbytes == 0:
@@ -53,18 +53,15 @@ def finddats():
         platform = match['platform']
         datfiles[platform] = file
     return datfiles
-    
+
 def printinfo(datinfo):
-    for platform, dat in datinfo.items():
+    for _, dat in datinfo.items():
         print(f'Platform [{dat["platform"]}]')
         print(f'{dat["description"]}')
         print(f'Version {dat["version"]}')
         print(f'Props {dat["props"]}')
         print(f'Props {dat["types"]}')
         print(f'Found {len(dat["games"])} game definitions')
-        #for name, game in list(datinfo['games'].items())[:5]:
-        #    print(name)
-        #    print(game)
         print()
     
 def printroms(romfiles):
@@ -75,9 +72,9 @@ def printroms(romfiles):
         if not dirname in bydir:
             bydir[dirname] = []
         bydir[dirname].append(romfiles[romfile])
-    for dir in bydir:
-        print(f'Rom Set {dir}')
-        roms = bydir[dir]
+    for romdir in bydir:
+        print(f'Rom Set {romdir}')
+        roms = bydir[romdir]
         print(f'{len(roms)} total files')
         sizes = []
         for rom in roms:
@@ -106,8 +103,8 @@ def pulldata(datfiles):
         datinfo['platform'] = platform
         xml = ElementTree.parse(datfile)
         header = xml.find('header')
-        for property in header:
-            datinfo[property.tag] = property.text
+        for prop in header:
+            datinfo[prop.tag] = prop.text
         entries = xml.findall('game')
         if len(entries) < 1:
             entries = xml.findall('machine')
@@ -159,16 +156,15 @@ def pulldata(datfiles):
         datinfo['types'] = childs
     return dats
     
-def scanroms(locations, types=['.7z', '.zip']):
+def scanroms(locations, types=None):
+    if not types:
+        types = ['.7z', '.zip']
     romfiles = {}
     allfiles = []
     for location in locations:
-        for type in types:
-            allfiles.extend(glob.glob(f'{location}\\**\\*{type}'))
+        for typ in types:
+            allfiles.extend(glob.glob(f'{location}\\**\\*{typ}'))
     for allfile in tqdm(allfiles, desc='rom files', unit='file'):
-        #if not 'the' in allfile:
-        #    continue
-        #print(allfile)
         listed = None
         try:
             listed = patoolib.list_archive(allfile, verbosity=-1)
@@ -186,7 +182,6 @@ def scanroms(locations, types=['.7z', '.zip']):
         fileinfo['files'] = {}
         for line in lines:
             line = str(line, 'utf-8')
-            #print(line)
             parts = line.split()
             dividers = True
             for part in parts:
@@ -217,85 +212,43 @@ def scanroms(locations, types=['.7z', '.zip']):
                 if dividers:
                     break
                 info = {}
-                #print(line)
-                for i in range(len(offsets)):
-                    begin = offsets[i]
+                for index, offset in enumerate(offsets):
+                    begin = offsets[index]
                     end = len(line)
-                    if i+1 < len(offsets):
-                        end = offsets[i+1]
+                    if index+1 < len(offsets):
+                        end = offsets[index+1]
                     subline = line[begin:end]
-                    if i < len(offsets) - 1:
+                    if index < len(offsets) - 1:
                         subline = subline.strip()
                     if subline.strip() == '':
                         continue
-                    info[headers[i]] = subline
-                    #print(f'"{subline}"')
+                    info[headers[index]] = subline
                 subname = info['Name']
                 fileinfo['files'][subname] = info
-                #print(f'"{info["Date"]}" "{info["Time"]}" "{info["Attr"]}" "{info["Size"]}" "{info["Compressed"]}" "{info["Name"]}"') 
-                #if len(parts) > len(headers):
-                #    laststart = 0
-                #    for part in parts[:len(headers)-1]:
-                #        laststart = line.index(part, laststart)
-                #        laststart += len(part)
-                #    last = line[laststart:].strip()
-                #    newparts = parts[:len(headers)-1]
-                #    newparts.append(last)
-                #    #print(newparts)
+
             else:
                 last = parts
-        #print(fileinfo)
         romfiles[allfile] = fileinfo
     return romfiles
     
 def matchroms(dats, roms):
-    sha1s = {}
-    for platform, dat in dats.items():
-        if 'MAME' in platform:
-            continue
-        for gamename, game in dat['games'].items():
-            #print(gamename)
-            if not 'roms' in game:
-                continue
-            for romname, rom in game['roms'].items():
-                if rom.get('status') == 'nodump':
-                    continue
-                sha1 = rom['sha1']
-                if sha1 in sha1s and rom["name"] != sha1s[sha1]["name"]:
-                    print(f'Dupe rom {rom["name"]} of {sha1s[sha1]["name"]}')
-                sha1s[sha1] = rom
-    exit()
-    files = {}
-    for romname, rom in tqdm(roms.items(), desc='roms', unit='rom'):
-        #print(romname)
-        for filename, file in rom['files'].items():
-            #print(filename)
-            info = {}
-            info['name'] = filename
-            info['size'] = file['Size']
-            info['zip'] = rom['path']
-            fullname = f'{filename}-{info["size"]}'
-            if fullname in files:
-                print(f'Dupe file for {filename} in {info["zip"]} matches {files[fullname]["zip"]}')
-            files[fullname] = info
+    pass
             
 def checkroms(roms):
     checks = {}
-    for romname, rom in tqdm(roms.items(), desc='roms', unit='rom'):
+    for romname in tqdm(roms, desc='roms', unit='rom'):
         try:
             romcheck = {}
             romcheck['path'] = romname
             romcheck['files'] = {}
             with tempzip(romname) as temp:
-                filter = os.path.join(temp, '**\\*')
-                files = glob.glob(filter, recursive=True)
+                wildcard = os.path.join(temp, '**\\*')
+                files = glob.glob(wildcard, recursive=True)
                 for file in files:
-                    #print(file)
                     path = Path(file)
                     if not path.is_file():
                         continue
                     filename = file.replace(temp, '')[1:]
-                    #print(filename)
                     info = {}
                     size = os.path.getsize(file)
                     info['size'] = size
@@ -306,7 +259,6 @@ def checkroms(roms):
                     info['sha1'] = sha1
                     romcheck['files'][filename] = info
             checks[romname] = romcheck
-            #print(romcheck)
         except Exception as e:
             print(e)
             print(f'Bad rom zip {romname}')
@@ -344,7 +296,7 @@ def main():
         print('Loading romfiles JSON')
         with open('romfiles.json', 'r') as romjson:
             roms = json.load(romjson)
-        matches = matchroms(dats, roms)
+        matchroms(dats, roms)
     elif args.check:
         roms = None
         print('Loading romfiles JSON')

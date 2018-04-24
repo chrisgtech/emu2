@@ -103,3 +103,4 @@ ENV/
 #emu2
 \[*.dat
 \[*.xml
+*.json
