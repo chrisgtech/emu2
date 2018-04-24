@@ -63,7 +63,7 @@ def printinfo(datinfo):
         print(f'Props {dat["types"]}')
         print(f'Found {len(dat["games"])} game definitions')
         print()
-    
+
 def printroms(romfiles):
     bydir = {}
     for romfile in romfiles:
@@ -213,7 +213,7 @@ def scanroms(locations, types=None):
                     break
                 info = {}
                 for index, offset in enumerate(offsets):
-                    begin = offsets[index]
+                    begin = offset
                     end = len(line)
                     if index+1 < len(offsets):
                         end = offsets[index+1]
