@@ -4,7 +4,7 @@ if sys.version_info < (3, 5):
     sys.stdout.write("Python 3.5+ is required")
     sys.exit(1)
 
-import re, glob, math, statistics
+import re, glob, math, statistics, json, tempfile, uuid, shutil
 from xml.etree import ElementTree
 from contextlib import contextmanager
 from argparse import ArgumentParser
@@ -12,6 +12,24 @@ from pathlib import Path
 
 import patoolib
 from tqdm import tqdm
+import hashfile
+
+@contextmanager
+def tempdir():
+    unique = uuid.uuid4().hex
+    temp = tempfile.gettempdir()
+    temp = os.path.join(temp, unique)
+    os.makedirs(temp)
+    try:
+        yield temp
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
+
+@contextmanager
+def tempzip(zipfile):
+    with tempdir() as dir:
+        patoolib.extract_archive(zipfile, outdir=dir, verbosity=-1)
+        yield dir
 
 def prettysize(inbytes):
     if inbytes == 0:
@@ -24,7 +42,7 @@ def prettysize(inbytes):
         s = int(s)
     return "%s %s" % (s, size_name[i])
 
-def finddats(filter=None):
+def finddats():
     files = glob.glob('*.dat')
     pattern = r'\[dat-(?P<platform>.*)\].*\.dat'
     datfiles = {}
@@ -33,22 +51,21 @@ def finddats(filter=None):
         if not match:
             continue
         platform = match['platform']
-        if filter and platform != filter:
-            continue
         datfiles[platform] = file
     return datfiles
     
 def printinfo(datinfo):
-    print(f'Platform [{datinfo["platform"]}]')
-    print(f'{datinfo["description"]}')
-    print(f'Version {datinfo["version"]}')
-    print(f'Props {datinfo["props"]}')
-    print(f'Props {datinfo["types"]}')
-    print(f'Found {len(datinfo["games"])} game definitions')
-    #for name, game in list(datinfo['games'].items())[:5]:
-    #    print(name)
-    #    print(game)
-    print()
+    for platform, dat in datinfo.items():
+        print(f'Platform [{dat["platform"]}]')
+        print(f'{dat["description"]}')
+        print(f'Version {dat["version"]}')
+        print(f'Props {dat["props"]}')
+        print(f'Props {dat["types"]}')
+        print(f'Found {len(dat["games"])} game definitions')
+        #for name, game in list(datinfo['games'].items())[:5]:
+        #    print(name)
+        #    print(game)
+        print()
     
 def printroms(romfiles):
     bydir = {}
@@ -80,63 +97,67 @@ def printroms(romfiles):
         print(f'Average file is {prettysize(average)}')
         print()
     
-def pulldata(datfile):
-    datinfo = {}
-    datinfo['file'] = datfile
-    xml = ElementTree.parse(datfile)
-    header = xml.find('header')
-    for property in header:
-        datinfo[property.tag] = property.text
-    entries = xml.findall('game')
-    if len(entries) < 1:
-        entries = xml.findall('machine')
-    atts = []
-    childs = []
-    games = {}
-    nonmeta = ['rom', 'release', 'device_ref', 'sample', 'biosset', 'disk']
-    for entry in tqdm(entries, desc='dat read'):
-        game = {}
-        attrib = entry.attrib
-        name = attrib.get('name')
-        if not name:
-            print('Error! No name for current game')
-            continue
-        if name in games:
-            print(f'Duplicate game "{name}" found')
-        games[name] = game
-        for key in attrib:
-            if not key in atts:
-                atts.append(key)
-            game[key] = attrib[key]
-        for child in entry:
-            tag = child.tag
-            if not tag in childs:
-                childs.append(tag)
-            if tag in nonmeta:
-                item = {}
-                subatt = child.attrib
-                subname = subatt.get('name')
-                if not subname:
-                    print(f'No name found for {tag}')
-                    exit()
-                item['type'] = tag
-                taglist = tag + 's'
-                if not taglist in game:
-                    game[taglist] = {}
-                game[taglist][subname] = item
-                for key in subatt:
-                    item[key] = subatt[key]
-            else:
-                text = child.text
-                if not text:
-                    text = child.get('status')
-                    if text:
-                        tag = tag + 'status'
-                game[tag] = text
-    datinfo['games'] = games
-    datinfo['props'] = atts
-    datinfo['types'] = childs
-    return datinfo
+def pulldata(datfiles):
+    dats = {}
+    for platform, datfile in datfiles.items():
+        datinfo = {}
+        dats[platform] = datinfo
+        datinfo['file'] = datfile
+        datinfo['platform'] = platform
+        xml = ElementTree.parse(datfile)
+        header = xml.find('header')
+        for property in header:
+            datinfo[property.tag] = property.text
+        entries = xml.findall('game')
+        if len(entries) < 1:
+            entries = xml.findall('machine')
+        atts = []
+        childs = []
+        games = {}
+        nonmeta = ['rom', 'release', 'device_ref', 'sample', 'biosset', 'disk']
+        for entry in tqdm(entries, desc=f'{platform} dat read', unit='game'):
+            game = {}
+            attrib = entry.attrib
+            name = attrib.get('name')
+            if not name:
+                print('Error! No name for current game')
+                continue
+            if name in games:
+                print(f'Duplicate game "{name}" found')
+            games[name] = game
+            for key in attrib:
+                if not key in atts:
+                    atts.append(key)
+                game[key] = attrib[key]
+            for child in entry:
+                tag = child.tag
+                if not tag in childs:
+                    childs.append(tag)
+                if tag in nonmeta:
+                    item = {}
+                    subatt = child.attrib
+                    subname = subatt.get('name')
+                    if not subname:
+                        print(f'No name found for {tag}')
+                        exit()
+                    item['type'] = tag
+                    taglist = tag + 's'
+                    if not taglist in game:
+                        game[taglist] = {}
+                    game[taglist][subname] = item
+                    for key in subatt:
+                        item[key] = subatt[key]
+                else:
+                    text = child.text
+                    if not text:
+                        text = child.get('status')
+                        if text:
+                            tag = tag + 'status'
+                    game[tag] = text
+        datinfo['games'] = games
+        datinfo['props'] = atts
+        datinfo['types'] = childs
+    return dats
     
 def scanroms(locations, types=['.7z', '.zip']):
     romfiles = {}
@@ -145,10 +166,16 @@ def scanroms(locations, types=['.7z', '.zip']):
         for type in types:
             allfiles.extend(glob.glob(f'{location}\\**\\*{type}'))
     for allfile in tqdm(allfiles, desc='rom files', unit='file'):
-        if not 'the' in allfile:
-            continue
+        #if not 'the' in allfile:
+        #    continue
         #print(allfile)
-        listed = patoolib.list_archive(allfile, verbosity=-1)
+        listed = None
+        try:
+            listed = patoolib.list_archive(allfile, verbosity=-1)
+        except Exception as e:
+            print(e)
+            print(f'Bad rom file {allfile}')
+            continue
         lines = listed.splitlines()
         started = False
         last = []
@@ -199,6 +226,8 @@ def scanroms(locations, types=['.7z', '.zip']):
                     subline = line[begin:end]
                     if i < len(offsets) - 1:
                         subline = subline.strip()
+                    if subline.strip() == '':
+                        continue
                     info[headers[i]] = subline
                     #print(f'"{subline}"')
                 subname = info['Name']
@@ -219,22 +248,112 @@ def scanroms(locations, types=['.7z', '.zip']):
         romfiles[allfile] = fileinfo
     return romfiles
     
+def matchroms(dats, roms):
+    sha1s = {}
+    for platform, dat in dats.items():
+        if 'MAME' in platform:
+            continue
+        for gamename, game in dat['games'].items():
+            #print(gamename)
+            if not 'roms' in game:
+                continue
+            for romname, rom in game['roms'].items():
+                if rom.get('status') == 'nodump':
+                    continue
+                sha1 = rom['sha1']
+                if sha1 in sha1s and rom["name"] != sha1s[sha1]["name"]:
+                    print(f'Dupe rom {rom["name"]} of {sha1s[sha1]["name"]}')
+                sha1s[sha1] = rom
+    exit()
+    files = {}
+    for romname, rom in tqdm(roms.items(), desc='roms', unit='rom'):
+        #print(romname)
+        for filename, file in rom['files'].items():
+            #print(filename)
+            info = {}
+            info['name'] = filename
+            info['size'] = file['Size']
+            info['zip'] = rom['path']
+            fullname = f'{filename}-{info["size"]}'
+            if fullname in files:
+                print(f'Dupe file for {filename} in {info["zip"]} matches {files[fullname]["zip"]}')
+            files[fullname] = info
+            
+def checkroms(roms):
+    checks = {}
+    for romname, rom in tqdm(roms.items(), desc='roms', unit='rom'):
+        try:
+            romcheck = {}
+            romcheck['path'] = romname
+            romcheck['files'] = {}
+            with tempzip(romname) as temp:
+                filter = os.path.join(temp, '**\\*')
+                files = glob.glob(filter, recursive=True)
+                for file in files:
+                    #print(file)
+                    path = Path(file)
+                    if not path.is_file():
+                        continue
+                    filename = file.replace(temp, '')[1:]
+                    #print(filename)
+                    info = {}
+                    size = os.path.getsize(file)
+                    info['size'] = size
+                    info['name'] = filename
+                    crc = hashfile.checksum_file(file, 'crc32')
+                    info['crc'] = crc
+                    sha1 = hashfile.hash_file(file, 'sha1')
+                    info['sha1'] = sha1
+                    romcheck['files'][filename] = info
+            checks[romname] = romcheck
+            #print(romcheck)
+        except Exception as e:
+            print(e)
+            print(f'Bad rom zip {romname}')
+            continue
+        
+    return checks
+    
 def main():
     parser = ArgumentParser()
     parser.add_argument('-l', '--list', action="store_true", help='List dat content')
     parser.add_argument('-s', '--scan', action="store_true", help='Scan roms')
-    parser.add_argument('-p', '--platform', default=None, help='Use specified platform only')
+    parser.add_argument('-m', '--match', action="store_true", help='Match roms from dats')
+    parser.add_argument('-c', '--check', action="store_true", help='Check rom hashes')
     args = parser.parse_args()
     if args.list:
-        datfiles = finddats(args.platform)
-        for platform, datfile in datfiles.items():
-            datinfo = pulldata(datfile)
-            datinfo['platform'] = platform
-            printinfo(datinfo)
+        datfiles = finddats()
+        datinfo = pulldata(datfiles)
+        print('Saving datfiles JSON')
+        with open('datfiles.json', 'w') as datjson:
+            json.dump(datinfo, datjson, indent=4, sort_keys=True)
+        printinfo(datinfo)
     elif args.scan:
         locations = ['F:\\emu2-roms\\']
         romfiles = scanroms(locations)
+        print('Saving romfiles JSON')
+        with open('romfiles.json', 'w') as romjson:
+            json.dump(romfiles, romjson, indent=4, sort_keys=True)
         printroms(romfiles)
+    elif args.match:
+        dats = None
+        print('Loading datfiles JSON')
+        with open('datfiles.json', 'r') as datjson:
+            dats = json.load(datjson)
+        roms = None
+        print('Loading romfiles JSON')
+        with open('romfiles.json', 'r') as romjson:
+            roms = json.load(romjson)
+        matches = matchroms(dats, roms)
+    elif args.check:
+        roms = None
+        print('Loading romfiles JSON')
+        with open('romfiles.json', 'r') as romjson:
+            roms = json.load(romjson)
+        checks = checkroms(roms)
+        print('Saving checkroms JSON')
+        with open('checkroms.json', 'w') as checkjson:
+            json.dump(checks, checkjson, indent=4, sort_keys=True)
     else:
         parser.print_help()
     
